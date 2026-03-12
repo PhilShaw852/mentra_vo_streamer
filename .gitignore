@@ -26,3 +26,6 @@ npm-debug.log*
 dist/
 build/
 *.tsbuildinfo
+
+# Calibration / tooling
+auki_robotics_domain_calibrator/

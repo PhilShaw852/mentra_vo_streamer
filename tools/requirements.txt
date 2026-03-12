@@ -1,0 +1,3 @@
+# Camera calibration tool (needs opencv with GUI for live preview)
+opencv-python>=4.8.0
+numpy>=1.24.0

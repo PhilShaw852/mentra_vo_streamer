@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QR pose – Mentra Live</title>
+  <script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 1rem;
+      background: #0f0f12;
+      color: #e4e4e7;
+      min-height: 100vh;
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+    .layout { display: flex; flex-wrap: wrap; gap: 1rem; max-width: 960px; margin: 0 auto; }
+    .video-wrap {
+      flex: 1;
+      min-width: 280px;
+      max-width: 720px;
+      background: #000;
+      border-radius: 0.5rem;
+      overflow: hidden;
+      aspect-ratio: 16/9;
+    }
+    .video-wrap video { width: 100%; height: 100%; display: block; }
+    .pose-panel {
+      width: 260px;
+      padding: 0.75rem;
+      background: #18181b;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+    }
+    .pose-panel h2 { margin: 0 0 0.5rem; font-size: 0.9375rem; }
+    .pose-panel .row { margin-bottom: 0.5rem; }
+    .pose-panel .label { color: #a1a1aa; font-size: 0.8125rem; }
+    .pose-panel .value { font-family: ui-monospace, monospace; }
+    .pose-panel .no-pose { color: #71717a; font-style: italic; }
+    .status { font-size: 0.8125rem; color: #a1a1aa; margin-top: 1rem; }
+    .status.error { color: #fca5a5; }
+    a { color: #818cf8; }
+  </style>
+</head>
+<body>
+  <h1>Live stream + QR pose</h1>
+  <p class="status" id="status">Loading…</p>
+  <p class="status" id="poseStatus"></p>
+  <div class="layout">
+    <div class="video-wrap">
+      <video id="video" controls muted playsinline></video>
+    </div>
+    <div class="pose-panel">
+      <h2>Camera pose (domain)</h2>
+      <div id="poseContent">
+        <div class="no-pose">No QR detected yet. Point the camera at a portal QR code.</div>
+      </div>
+    </div>
+  </div>
+  <p style="margin-top: 1rem;"><a href="/">Stream setup</a> · <a href="/detect.html">Watch + detect</a></p>
+
+  <script>
+    const video = document.getElementById('video');
+    const statusEl = document.getElementById('status');
+    const poseStatusEl = document.getElementById('poseStatus');
+    const poseContentEl = document.getElementById('poseContent');
+    const WS_PORT = 8766;
+    const WS_URL = 'ws://' + (location.hostname || 'localhost') + ':' + WS_PORT;
+
+    function setStatus(msg, isError) {
+      statusEl.textContent = msg;
+      statusEl.classList.toggle('error', !!isError);
+    }
+    function setPoseStatus(msg, isError) {
+      poseStatusEl.textContent = msg;
+      poseStatusEl.classList.toggle('error', !!isError);
+    }
+
+    function renderPose(msg) {
+      if (!msg || msg.position == null) {
+        poseContentEl.innerHTML = '<div class="no-pose">No QR detected yet. Point the camera at a portal QR code.</div>';
+        return;
+      }
+      const p = msg.position;
+      const r = msg.rotation || {};
+      const domain = msg.domain_id != null ? String(msg.domain_id) : '—';
+      poseContentEl.innerHTML = [
+        '<div class="row"><span class="label">Position (m)</span></div>',
+        '<div class="row value">x ' + p.x.toFixed(3) + ' &nbsp; y ' + p.y.toFixed(3) + ' &nbsp; z ' + p.z.toFixed(3) + '</div>',
+        '<div class="row"><span class="label">Rotation (°)</span></div>',
+        '<div class="row value">yaw ' + (r.yaw != null ? r.yaw.toFixed(1) : '—') + ' &nbsp; pitch ' + (r.pitch != null ? r.pitch.toFixed(1) : '—') + ' &nbsp; roll ' + (r.roll != null ? r.roll.toFixed(1) : '—') + '</div>',
+        '<div class="row"><span class="label">Domain ID</span></div>',
+        '<div class="row value">' + domain + '</div>',
+      ].join('');
+    }
+
+    let ws = null;
+    let reconnectTimer = null;
+    function connectPose() {
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      setPoseStatus('Pose: connecting…');
+      try {
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => { setPoseStatus('Pose: connected'); };
+        ws.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            renderPose(data);
+          } catch (_) {}
+        };
+        ws.onclose = () => {
+          setPoseStatus('QR pose not running. Start: python tools/qr_pose_stream.py (retrying…)');
+          reconnectTimer = setTimeout(connectPose, 3000);
+        };
+        ws.onerror = () => {};
+      } catch (e) {
+        setPoseStatus('QR pose not running (retrying in 3s…)');
+        reconnectTimer = setTimeout(connectPose, 3000);
+      }
+    }
+
+    async function play() {
+      const res = await fetch('/api/receiver-info');
+      const info = await res.json();
+      const url = info.playbackUrl;
+      if (!url) {
+        setStatus('No playback URL.', true);
+        return;
+      }
+      if (!flvjs.isSupported()) {
+        setStatus('FLV not supported.', true);
+        return;
+      }
+      const flvPlayer = flvjs.createPlayer({
+        type: 'flv',
+        url: url,
+        isLive: true,
+        hasAudio: true,
+        hasVideo: true,
+      }, { enableStashBuffer: false, stashInitialSize: 128 });
+      flvPlayer.attachMediaElement(video);
+      flvPlayer.load();
+      flvPlayer.play();
+      flvPlayer.on(flvjs.Events.ERROR, () => setStatus('Stream not available. Start the stream from the glasses first.', true));
+      flvPlayer.on(flvjs.Events.LOADING_COMPLETE, () => setStatus('Live'));
+      setStatus('Connecting…');
+      connectPose();
+    }
+    play();
+    renderPose(null);
+  </script>
+</body>
+</html>

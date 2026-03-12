@@ -8,7 +8,8 @@
     "start": "bun run src/index.ts",
     "tunnel": "ngrok http --url=modifiable-presymphysial-alisia.ngrok-free.dev 3010",
     "dev:all": "concurrently \"bun run dev\" \"bun run tunnel\"",
-    "detect": ".venv/bin/python detect/detect_stream.py"
+    "detect": ".venv/bin/python detect/detect_stream.py",
+    "qr-pose": ".venv/bin/python tools/qr_pose_stream.py"
   },
   "dependencies": {
     "@mentra/sdk": "latest",
