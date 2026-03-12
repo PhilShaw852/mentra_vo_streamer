@@ -66,6 +66,15 @@ const server = new StreamAppServer({
 
 const app = server.getExpressApp();
 
+// Log webhook requests so you can correlate with ngrok (502 = request didn't reach app or timed out)
+app.use((req, res, next) => {
+  if (req.method === "POST" && req.path === "/webhook") {
+    const t = new Date().toISOString();
+    console.log(`Webhook received at ${t}`);
+  }
+  next();
+});
+
 // Reachability check: open https://your-ngrok-url/ping to verify tunnel + server
 app.get("/ping", (_req, res) => {
   res.json({

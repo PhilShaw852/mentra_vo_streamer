@@ -53,6 +53,7 @@ Simple app for **unmanaged RTMP streaming** from Mentra Live glasses. It include
    - **“Received session request”** – Cloud reached your server.
    - **“Failed to connect”** – Your server could not open the WebSocket to the cloud (check outbound access to `api.mentra.glass` or `devapi.mentra.glass`).
 4. **Package name & API key** – `.env` `MENTRAOS_PACKAGE_NAME` and `MENTRAOS_API_KEY` must match the app in the console.
+5. **502 Bad Gateway in ngrok** – A 502 means ngrok could not get a valid response from your app at that moment. Common causes: the app wasn’t running, it was restarting (e.g. after a code change), or it was slow to respond. The app logs “Webhook received at …” when a webhook hits the server; if you see 502 in ngrok but no matching log, the request never reached the app (keep the app running and avoid restarts when opening the app on the glasses).
 
 ## Usage
 
@@ -65,12 +66,39 @@ Simple app for **unmanaged RTMP streaming** from Mentra Live glasses. It include
 
 The glasses must have an active session (app running) for start/stop to work. The SDK handles keep-alive so the stream stays up while the app is running.
 
+## Object detection (YOLO)
+
+Object detection runs on the live stream and is limited to **laptop** and **cell phone** (COCO classes). Keys are not in the COCO dataset; use a custom model to detect keys.
+
+1. **Create and use a venv** (from project root):
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate   # Windows: .venv\Scripts\activate
+   pip install -r detect/requirements.txt
+   ```
+
+2. **Start the app and stream** (so the FLV URL is live), then run the detector:
+
+   ```bash
+   bun run detect
+   ```
+
+   Or with the venv activated: `python detect/detect_stream.py`. The `bun run detect` script uses `.venv/bin/python` if present.
+
+   Or set `STREAM_URL` if your app is on another host/port (default `http://localhost:3010/receiver/flv`). Optional: `DETECT_WS_PORT=8765`, `DETECT_CONFIDENCE=0.5`, `DETECT_EVERY_N_FRAMES=4` (run inference every Nth frame to reduce lag).
+
+3. Open **http://localhost:3010/detect.html** to watch the stream and see live detections (list updates via WebSocket on port 8765).
+
 ## Project layout
 
 - `src/index.ts` – MentraOS app server, session handling, start/stop stream API, and FLV proxy.
 - `src/receiver.ts` – Edge RTMP receiver (node-media-server): ingest + HTTP-FLV playback.
 - `public/index.html` – Stream URL input (pre-filled with local receiver) and Start/Stop.
 - `public/watch.html` – Live viewer (HTTP-FLV via flv.js).
+- `public/detect.html` – Live stream + object detection list.
+- `detect/detect_stream.py` – YOLO detector (laptop, cell phone); WebSocket server for results.
+- `detect/requirements.txt` – Python deps (ultralytics, opencv-python-headless, websockets).
 - `.env` – API key, package name, and optional receiver ports (not committed).
 
 ## MCP (MentraOS docs)

@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watch + detect – Mentra Live</title>
+  <script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 1rem;
+      background: #0f0f12;
+      color: #e4e4e7;
+      min-height: 100vh;
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+    .layout { display: flex; flex-wrap: wrap; gap: 1rem; max-width: 960px; margin: 0 auto; }
+    .video-wrap {
+      flex: 1;
+      min-width: 280px;
+      max-width: 720px;
+      background: #000;
+      border-radius: 0.5rem;
+      overflow: hidden;
+      aspect-ratio: 16/9;
+      position: relative;
+    }
+    .video-wrap video { width: 100%; height: 100%; display: block; }
+    .video-wrap canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .detections {
+      width: 220px;
+      padding: 0.75rem;
+      background: #18181b;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+    }
+    .detections h2 { margin: 0 0 0.5rem; font-size: 0.9375rem; }
+    .detections ul { margin: 0; padding-left: 1.25rem; }
+    .detections li { margin-bottom: 0.25rem; }
+    .status { font-size: 0.8125rem; color: #a1a1aa; margin-top: 1rem; }
+    .status.error { color: #fca5a5; }
+    .debug {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      background: #18181b;
+      border-radius: 0.5rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.75rem;
+      color: #a1a1aa;
+      white-space: pre-wrap;
+      max-width: 960px;
+    }
+    a { color: #818cf8; }
+  </style>
+</head>
+<body>
+  <h1>Live stream + object detection</h1>
+  <p class="status" id="status">Loading…</p>
+  <p class="status" id="detectStatus"></p>
+  <div class="layout">
+    <div class="video-wrap">
+      <video id="video" controls muted playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div class="detections">
+      <h2>Detections (laptop, phone)</h2>
+      <ul id="list"></ul>
+    </div>
+  </div>
+  <p style="margin-top: 1rem;"><a href="/">Stream setup</a> · <a href="/watch.html">Watch only</a></p>
+  <div class="debug" id="debug">Debug: waiting for messages…</div>
+
+  <script>
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const statusEl = document.getElementById('status');
+    const detectStatusEl = document.getElementById('detectStatus');
+    const listEl = document.getElementById('list');
+    const debugEl = document.getElementById('debug');
+    const WS_URL = 'ws://' + (location.hostname || 'localhost') + ':8765';
+
+    function setDebug(lines) {
+      debugEl.textContent = lines.join('\n');
+    }
+
+    const BOX_COLORS = { laptop: '#ef4444', 'cell phone': '#22c55e' };
+    let lastDetectionData = null;
+    // Delay (ms) before showing detection so it matches the frame on screen (video is behind the detector)
+    const DETECTION_DELAY_MS = parseInt(new URLSearchParams(location.search).get('delay') || '1500', 10) || 1500;
+    // Buffer of { data, receivedAt }; we show the entry that was received ~DETECTION_DELAY_MS ago so overlay stays in sync
+    const detectionBuffer = [];
+    const DETECTION_BUFFER_MAX = 60;
+    let currentDisplayed = null;
+
+    function resizeOverlay() {
+      const wrap = video.parentElement;
+      const w = Math.max(1, wrap.clientWidth);
+      const h = Math.max(1, wrap.clientHeight);
+      if (overlay.width !== w || overlay.height !== h) {
+        overlay.width = w;
+        overlay.height = h;
+        if (lastDetectionData) drawBoxes(lastDetectionData);
+      }
+    }
+
+    function drawBoxes(data) {
+      const lines = [];
+      lines.push('Last message: ' + (data ? JSON.stringify(data).slice(0, 200) + '…' : 'null'));
+      lines.push('Display delay: ' + DETECTION_DELAY_MS + 'ms (?delay=2000 to tune)');
+      if (!data || !data.detections || !data.detections.length) {
+        resizeOverlay();
+        const ctx = overlay.getContext('2d');
+        if (overlay.width && overlay.height) ctx.clearRect(0, 0, overlay.width, overlay.height);
+        setDebug(lines);
+        return;
+      }
+      lastDetectionData = data;
+      resizeOverlay();
+      const ctx = overlay.getContext('2d');
+      const dw = overlay.width;
+      const dh = overlay.height;
+      const fw = data.frameWidth || video.videoWidth || 0;
+      const fh = data.frameHeight || video.videoHeight || 0;
+      lines.push('canvas: ' + dw + 'x' + dh + '  frame: ' + fw + 'x' + fh + '  video: ' + (video.videoWidth || 0) + 'x' + (video.videoHeight || 0));
+      if (dw <= 0 || dh <= 0) {
+        lines.push('SKIP: canvas size is 0');
+        setDebug(lines);
+        return;
+      }
+      if (fw <= 0 || fh <= 0) {
+        lines.push('SKIP: frame size is 0 (no frameWidth/frameHeight and video not ready?)');
+        setDebug(lines);
+        return;
+      }
+      // Map frame coords to the video content rect (letterbox/pillarbox so boxes match visible video)
+      const scale = Math.min(dw / fw, dh / fh);
+      const contentW = fw * scale;
+      const contentH = fh * scale;
+      const contentLeft = (dw - contentW) / 2;
+      const contentTop = (dh - contentH) / 2;
+      lines.push('content rect: ' + contentLeft.toFixed(0) + ',' + contentTop.toFixed(0) + ' size ' + contentW.toFixed(0) + 'x' + contentH.toFixed(0));
+      ctx.clearRect(0, 0, dw, dh);
+      data.detections.forEach((d, i) => {
+        const [x1, y1, x2, y2] = d.bbox;
+        const sx1 = contentLeft + (x1 / fw) * contentW;
+        const sy1 = contentTop + (y1 / fh) * contentH;
+        const sx2 = contentLeft + (x2 / fw) * contentW;
+        const sy2 = contentTop + (y2 / fh) * contentH;
+        lines.push('box' + i + ': ' + d.class + ' raw[' + x1.toFixed(0) + ',' + y1.toFixed(0) + ',' + x2.toFixed(0) + ',' + y2.toFixed(0) + '] -> screen[' + sx1.toFixed(0) + ',' + sy1.toFixed(0) + ',' + sx2.toFixed(0) + ',' + sy2.toFixed(0) + ']');
+        ctx.strokeStyle = BOX_COLORS[d.class] || '#888';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(sx1, sy1, sx2 - sx1, sy2 - sy1);
+        ctx.font = 'bold 14px system-ui, sans-serif';
+        ctx.fillStyle = BOX_COLORS[d.class] || '#888';
+        const label = `${d.class} ${(d.confidence * 100).toFixed(0)}%`;
+        const textY = sy1 - 5;
+        ctx.fillRect(sx1, textY - 12, ctx.measureText(label).width + 6, 14);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(label, sx1 + 3, textY);
+      });
+      setDebug(lines);
+    }
+
+    function setStatus(msg, isError) {
+      statusEl.textContent = msg;
+      statusEl.classList.toggle('error', !!isError);
+    }
+    function setDetectStatus(msg, isError) {
+      detectStatusEl.textContent = msg;
+      detectStatusEl.classList.toggle('error', !!isError);
+    }
+
+    function renderDetections(data) {
+      if (data) {
+        const entry = { data: { ...data, detections: data.detections || [] }, receivedAt: Date.now() };
+        detectionBuffer.push(entry);
+        if (detectionBuffer.length > DETECTION_BUFFER_MAX) detectionBuffer.shift();
+      }
+    }
+
+    function updateListFromDisplayed(data) {
+      const detections = data && data.detections;
+      if (!detections || !detections.length) {
+        listEl.innerHTML = '<li>—</li>';
+        return;
+      }
+      listEl.innerHTML = detections.map(d =>
+        `<li><strong>${d.class}</strong> ${(d.confidence * 100).toFixed(0)}%</li>`
+      ).join('');
+    }
+
+    setInterval(() => {
+      const now = Date.now();
+      const cutoff = now - DETECTION_DELAY_MS;
+      // Show the most recent detection that was received at least DETECTION_DELAY_MS ago
+      let best = null;
+      for (let i = detectionBuffer.length - 1; i >= 0; i--) {
+        if (detectionBuffer[i].receivedAt <= cutoff) {
+          best = detectionBuffer[i].data;
+          break;
+        }
+      }
+      if (best) {
+        currentDisplayed = best;
+        updateListFromDisplayed(best);
+      }
+      // Drop buffer entries that are too old to ever be shown
+      while (detectionBuffer.length && detectionBuffer[0].receivedAt < cutoff - 500) detectionBuffer.shift();
+      if (currentDisplayed) drawBoxes(currentDisplayed);
+      else {
+        updateListFromDisplayed(null);
+        const ctx = overlay.getContext('2d');
+        if (overlay.width && overlay.height) ctx.clearRect(0, 0, overlay.width, overlay.height);
+      }
+    }, 100);
+
+    let ws = null;
+    let reconnectTimer = null;
+    function connectDetections() {
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      setDetectStatus('Detection: connecting…');
+      try {
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => { setDetectStatus('Detection: connected'); };
+        ws.onmessage = (e) => {
+          const data = JSON.parse(e.data);
+          console.log('[detect] ws message', data);
+          if (data.detections) renderDetections(data);
+          else setDebug(['Last message had no detections', JSON.stringify(data).slice(0, 300)]);
+        };
+        ws.onclose = () => {
+          setDetectStatus('Detection not running. Start: pip install -r detect/requirements.txt && python detect/detect_stream.py (retrying…)');
+          reconnectTimer = setTimeout(connectDetections, 3000);
+        };
+        ws.onerror = () => {};
+      } catch (e) {
+        setDetectStatus('Detection not running. Start: python detect/detect_stream.py (retrying in 3s…)');
+        reconnectTimer = setTimeout(connectDetections, 3000);
+      }
+    }
+
+    async function play() {
+      const res = await fetch('/api/receiver-info');
+      const info = await res.json();
+      const url = info.playbackUrl;
+      if (!url) {
+        setStatus('No playback URL.', true);
+        return;
+      }
+      if (!flvjs.isSupported()) {
+        setStatus('FLV not supported.', true);
+        return;
+      }
+      const flvPlayer = flvjs.createPlayer({
+        type: 'flv',
+        url: url,
+        isLive: true,
+        hasAudio: true,
+        hasVideo: true,
+      }, { enableStashBuffer: false, stashInitialSize: 128 });
+      flvPlayer.attachMediaElement(video);
+      flvPlayer.load();
+      flvPlayer.play();
+      flvPlayer.on(flvjs.Events.ERROR, () => setStatus('Stream not available. Start the stream from the glasses first.', true));
+      flvPlayer.on(flvjs.Events.LOADING_COMPLETE, () => setStatus('Live'));
+      setStatus('Connecting…');
+      connectDetections();
+      window.addEventListener('resize', resizeOverlay);
+      if (typeof ResizeObserver !== 'undefined') {
+        const ro = new ResizeObserver(() => { resizeOverlay(); });
+        ro.observe(video.parentElement);
+      }
+    }
+    play();
+    updateListFromDisplayed(null);
+  </script>
+</body>
+</html>
