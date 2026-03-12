@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mentraos-docs": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://docs.mentraglass.com/mcp"]
+    }
+  }
+}
