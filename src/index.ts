@@ -75,6 +75,11 @@ app.use((req, res, next) => {
   next();
 });
 
+// Mentra in-app webview: serve the main stream setup page (same as /)
+app.get("/webview", (_req, res) => {
+  res.sendFile("index.html", { root: "./public" });
+});
+
 // Reachability check: open https://your-ngrok-url/ping to verify tunnel + server
 app.get("/ping", (_req, res) => {
   res.json({
@@ -113,14 +118,14 @@ app.post("/api/start-stream", async (req, res) => {
     if (result?.success) {
       res.json({ ok: true, streamId: result.streamId });
     } else {
-      res.status(500).json({ ok: false, error: result?.error ?? "Start stream failed" });
+      const msg = result?.error ?? "Start stream failed";
+      console.error("[api/start-stream] SDK returned failure:", msg, result);
+      res.status(500).json({ ok: false, error: msg });
     }
   } catch (err) {
-    console.error("startStream error:", err);
-    res.status(500).json({
-      ok: false,
-      error: err instanceof Error ? err.message : "Start stream failed",
-    });
+    const msg = err instanceof Error ? err.message : "Start stream failed";
+    console.error("[api/start-stream] Exception:", msg, err);
+    res.status(500).json({ ok: false, error: msg });
   }
 });
 

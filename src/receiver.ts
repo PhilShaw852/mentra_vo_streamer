@@ -41,11 +41,28 @@ export function startReceiver(): void {
     },
   };
   nms = new NodeMediaServer(config);
-  nms.on("prePublish", (id: string, streamPath: string, args: unknown) => {
-    console.log("[receiver] Stream publishing:", streamPath, id);
+  // When a new publisher connects, replace any existing one (avoids "already has a publisher" on restart/reconnect)
+  nms.on("prePublish", (session: { id?: string; streamPath?: string; broadcast?: { publisher?: { socket?: { end: () => void } }; flvMetaData?: unknown; flvAudioHeader?: unknown; flvVideoHeader?: unknown; rtmpMetaData?: unknown; rtmpAudioHeader?: unknown; rtmpVideoHeader?: unknown; flvGopCache?: { clear: () => void }; rtmpGopCache?: { clear: () => void } } }) => {
+    const b = session?.broadcast;
+    if (b && b.publisher != null) {
+      const old = b.publisher as { socket?: { end: () => void } };
+      (b as { publisher: unknown }).publisher = null;
+      b.flvMetaData = null;
+      b.flvAudioHeader = null;
+      b.flvVideoHeader = null;
+      b.rtmpMetaData = null;
+      b.rtmpAudioHeader = null;
+      b.rtmpVideoHeader = null;
+      b.flvGopCache?.clear();
+      b.rtmpGopCache?.clear();
+      if (old?.socket?.end) old.socket.end();
+      console.log("[receiver] Replaced previous publisher for same stream path");
+    }
+    console.log("[receiver] Stream publishing:", session?.streamPath ?? "", session?.id ?? "");
   });
-  nms.on("donePublish", (id: string, streamPath: string, args: unknown) => {
-    console.log("[receiver] Stream ended:", streamPath);
+  nms.on("donePublish", (session: { streamPath?: string } | string) => {
+    const path = typeof session === "object" ? session?.streamPath : session;
+    console.log("[receiver] Stream ended:", path ?? "");
   });
   nms.run();
   console.log(
