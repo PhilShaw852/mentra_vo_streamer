@@ -29,3 +29,6 @@ build/
 
 # Calibration / tooling
 auki_robotics_domain_calibrator/
+
+# Server-side recordings (watch page Record button)
+recordings/

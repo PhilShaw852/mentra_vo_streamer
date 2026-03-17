@@ -1,5 +1,8 @@
 import { AppServer, AppSession } from "@mentra/sdk";
 import express from "express";
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
 import {
   startReceiver,
   getRtmpUrl,
@@ -183,6 +186,109 @@ app.get("/api/receiver-info", (req, res) => {
     rtmpPort: rtmp,
     httpPort: http,
   });
+});
+
+// Server-side recording: pipe FLV stream to a file in the project directory (where bun run dev is run)
+const RECORDINGS_DIR = path.join(process.cwd(), "recordings");
+let recordAbortController: AbortController | null = null;
+let recordWriteStream: fs.WriteStream | null = null;
+let recordPath: string | null = null;
+
+function recordingFilename(ext = "flv"): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `mentra-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.${ext}`;
+}
+
+function convertFlvToMp4(flvPath: string): void {
+  const mp4Path = flvPath.replace(/\.flv$/i, ".mp4");
+  const ff = spawn("ffmpeg", ["-y", "-i", flvPath, "-c", "copy", mp4Path], {
+    stdio: "ignore",
+  });
+  ff.on("close", (code) => {
+    if (code === 0) console.log("[record] MP4 saved to", mp4Path);
+    else console.warn("[record] ffmpeg exit code", code, "- install ffmpeg for MP4 (e.g. brew install ffmpeg)");
+  });
+  ff.on("error", (err) => console.warn("[record] ffmpeg error:", (err as Error).message));
+}
+
+app.get("/api/record/status", (_req, res) => {
+  res.json({
+    recording: recordWriteStream != null,
+    path: recordPath ?? null,
+  });
+});
+
+app.post("/api/record/start", async (_req, res) => {
+  if (recordWriteStream != null) {
+    res.status(409).json({ ok: false, error: "Already recording" });
+    return;
+  }
+  const { http: httpPort } = getReceiverPorts();
+  const appName = process.env.RTMP_APP ?? "live";
+  const streamKey = process.env.RTMP_STREAM_KEY ?? "mentra";
+  const upstream = `http://127.0.0.1:${httpPort}/${appName}/${streamKey}.flv`;
+  try {
+    if (!fs.existsSync(RECORDINGS_DIR)) {
+      fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
+    }
+    const filename = recordingFilename();
+    const filePath = path.join(RECORDINGS_DIR, filename);
+    recordPath = filePath;
+    recordAbortController = new AbortController();
+    recordWriteStream = fs.createWriteStream(filePath);
+
+    const upRes = await fetch(upstream, { signal: recordAbortController.signal });
+    if (!upRes.ok || !upRes.body) {
+      recordWriteStream.close();
+      recordWriteStream = null;
+      recordPath = null;
+      recordAbortController = null;
+      res.status(503).json({ ok: false, error: "Stream not available" });
+      return;
+    }
+    res.json({ ok: true, path: filePath, filename });
+
+    (async () => {
+      try {
+        const reader = upRes.body!.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          recordWriteStream?.write(Buffer.from(value));
+        }
+      } catch (e) {
+        if ((e as Error).name !== "AbortError") console.error("[record] stream read error:", e);
+      } finally {
+        recordWriteStream?.end();
+        recordWriteStream = null;
+        const savedFlv = recordPath;
+        recordPath = null;
+        if (savedFlv) {
+          console.log("[record] Stopped. Saved to", savedFlv);
+          convertFlvToMp4(savedFlv);
+        }
+      }
+    })();
+  } catch (err) {
+    recordWriteStream?.close();
+    recordWriteStream = null;
+    recordPath = null;
+    const msg = err instanceof Error ? err.message : "Failed to start recording";
+    console.error("[record] start error:", msg);
+    res.status(500).json({ ok: false, error: msg });
+  }
+});
+
+app.post("/api/record/stop", (_req, res) => {
+  if (recordAbortController == null) {
+    res.json({ ok: true, path: null, message: "Not recording" });
+    return;
+  }
+  const savedPath = recordPath;
+  recordAbortController.abort();
+  recordAbortController = null;
+  res.json({ ok: true, path: savedPath });
 });
 
 // Proxy HTTP-FLV playback through app so watch page is same-origin

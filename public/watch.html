@@ -34,6 +34,35 @@
       color: #a1a1aa;
     }
     .status.error { color: #fca5a5; }
+    .controls {
+      margin-top: 1rem;
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    button {
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      border: none;
+      border-radius: 0.5rem;
+      cursor: pointer;
+      background: #3f3f46;
+      color: #e4e4e7;
+    }
+    button:hover { background: #52525b; }
+    button.record {
+      background: #dc2626;
+      color: white;
+    }
+    button.record:hover { background: #b91c1c; }
+    button.recording {
+      background: #b91c1c;
+      color: white;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse { 50% { opacity: 0.85; } }
     a { color: #818cf8; }
   </style>
 </head>
@@ -42,12 +71,68 @@
   <div class="video-wrap">
     <video id="video" controls muted playsinline></video>
   </div>
+  <div class="controls">
+    <button type="button" id="recordBtn" class="record">Record</button>
+    <span class="status" id="recordStatus"></span>
+  </div>
   <p class="status" id="status">Loading…</p>
+  <p class="status" style="font-size: 0.75rem; margin-top: 0.25rem;">Recordings save to <strong>recordings/</strong> in the project folder. FLV is always saved; an MP4 is also created if <code>ffmpeg</code> is installed (e.g. <code>brew install ffmpeg</code>).</p>
   <p><a href="/">Back to stream setup</a></p>
 
   <script>
     const video = document.getElementById('video');
     const statusEl = document.getElementById('status');
+    const recordBtn = document.getElementById('recordBtn');
+    const recordStatusEl = document.getElementById('recordStatus');
+
+    let recording = false;
+
+    function shortPath(fullPath) {
+      if (!fullPath) return '';
+      const m = fullPath.match(/recordings\/[^/]+$/);
+      return m ? m[0] : fullPath.split(/[/\\]/).slice(-2).join('/');
+    }
+
+    async function updateRecordStatus() {
+      try {
+        const st = await fetch('/api/record/status').then(r => r.json());
+        recording = st.recording;
+        if (st.recording && st.path) recordStatusEl.textContent = 'Recording to ' + shortPath(st.path);
+      } catch (_) {}
+    }
+
+    recordBtn.addEventListener('click', async () => {
+      if (recording) {
+        try {
+          const res = await fetch('/api/record/stop', { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          recording = false;
+          recordBtn.textContent = 'Record';
+          recordBtn.classList.remove('recording');
+          recordStatusEl.textContent = data.path ? 'Saved to ' + shortPath(data.path) : 'Stopped';
+        } catch (err) {
+          recordStatusEl.textContent = 'Stop failed';
+        }
+      } else {
+        recordStatusEl.textContent = 'Starting…';
+        recordBtn.disabled = true;
+        try {
+          const res = await fetch('/api/record/start', { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.ok) {
+            recording = true;
+            recordBtn.textContent = 'Stop recording';
+            recordBtn.classList.add('recording');
+            recordStatusEl.textContent = 'Recording to ' + (data.filename || shortPath(data.path) || 'recordings/');
+          } else {
+            recordStatusEl.textContent = data.error || 'Failed to start recording';
+          }
+        } catch (err) {
+          recordStatusEl.textContent = 'Request failed';
+        }
+        recordBtn.disabled = false;
+      }
+    });
 
     async function play() {
       const res = await fetch('/api/receiver-info');
@@ -82,6 +167,7 @@
         statusEl.classList.remove('error');
       });
       statusEl.textContent = 'Connecting…';
+      setInterval(updateRecordStatus, 2000);
     }
     play();
   </script>
