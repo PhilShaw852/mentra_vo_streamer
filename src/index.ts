@@ -9,6 +9,14 @@ import {
 
 // Store the active session so the web UI can trigger stream start/stop
 let currentSession: AppSession | null = null;
+// Latest stream status – used to treat "active" as success when SDK returns late
+let lastStreamStatus: unknown = null;
+
+function isStreamActive(status: unknown): boolean {
+  if (status == null) return false;
+  const s = typeof status === "string" ? status : JSON.stringify(status);
+  return s.toLowerCase().includes("active");
+}
 
 class StreamAppServer extends AppServer {
   protected async onSession(
@@ -17,6 +25,7 @@ class StreamAppServer extends AppServer {
     userId: string
   ): Promise<void> {
     currentSession = session;
+    lastStreamStatus = null;
     console.log(`Session started: ${sessionId} for user ${userId}`);
 
     // Don't block webhook response: run display in background.
@@ -30,6 +39,7 @@ class StreamAppServer extends AppServer {
     });
 
     session.camera.onStreamStatus((status) => {
+      lastStreamStatus = status;
       console.log("Stream status:", String(status));
     });
 
@@ -150,10 +160,11 @@ app.post("/api/stop-stream", async (_req, res) => {
   }
 });
 
-// Stream status for the UI
+// Stream status for the UI (streaming: true when SDK reports "active")
 app.get("/api/stream-status", (_req, res) => {
   res.json({
     hasSession: !!currentSession,
+    streaming: isStreamActive(lastStreamStatus),
   });
 });
 

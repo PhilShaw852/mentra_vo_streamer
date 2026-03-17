@@ -155,6 +155,20 @@
           showMessage('Stream started.');
         } else {
           showMessage(data.error || 'Failed to start stream', true);
+          // SDK sometimes reports failure even when stream goes active shortly after; poll and correct the message
+          let pollCount = 0;
+          const pollMax = 24;
+          const pollInterval = setInterval(async () => {
+            pollCount++;
+            if (pollCount > pollMax) { clearInterval(pollInterval); return; }
+            try {
+              const st = await fetch('/api/stream-status').then(r => r.json());
+              if (st.streaming) {
+                clearInterval(pollInterval);
+                showMessage('Stream started.', false);
+              }
+            } catch (_) {}
+          }, 500);
         }
       } catch (err) {
         showMessage('Network error. Is the app running?', true);
